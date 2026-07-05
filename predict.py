@@ -62,10 +62,15 @@ class Predictor(BasePredictor):
         language_hint = language.strip() or None
 
         # Konversi ke WAV 16kHz mono (standar input Whisper), sama seperti
-        # endpoint /transcribe di simple_server.py
+        # endpoint /transcribe di simple_server.py.
+        # PENTING: jangan tentukan `format=` berdasarkan ekstensi nama file --
+        # URL dari Appwrite Storage (mis. ".../view?project=...") tidak punya
+        # ekstensi di path-nya, jadi deteksi berbasis nama file akan salah
+        # (fallback ke "wav" lalu ffmpeg gagal decode file m4a/caf sebagai wav).
+        # Tanpa `format=`, ffmpeg/pydub auto-detect dari isi file (magic bytes),
+        # yang jauh lebih reliable untuk URL tanpa ekstensi.
         src_path = str(audio)
-        ext = os.path.splitext(src_path)[1].lstrip(".").lower() or "wav"
-        audio_seg = AudioSegment.from_file(src_path, format=ext)
+        audio_seg = AudioSegment.from_file(src_path)
         audio_seg = audio_seg.set_channels(1).set_frame_rate(16000)
 
         temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
