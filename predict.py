@@ -1,7 +1,6 @@
 import os
 import tempfile
 
-import torch
 from pydub import AudioSegment
 from cog import BasePredictor, BaseModel, Input, Path
 from faster_whisper import WhisperModel
@@ -16,11 +15,15 @@ class Output(BaseModel):
 class Predictor(BasePredictor):
     def setup(self):
         """Load faster-whisper model sekali aja saat container start."""
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        # float16 lebih cepat & akurat di GPU; int8 lebih ringan kalau fallback ke CPU
-        self.compute_type = "float16" if self.device == "cuda" else "int8"
+        # "auto" -> ctranslate2 (dipakai faster-whisper di balik layar) otomatis
+        # pilih CUDA kalau tersedia, fallback ke CPU. Ini menghindari perlunya
+        # import torch cuma buat cek torch.cuda.is_available().
+        self.device = "auto"
+        # compute_type "default" otomatis pilih presisi terbaik sesuai device
+        # (float16 di GPU, int8 di CPU) tanpa perlu deteksi manual.
+        self.compute_type = "default"
 
-        print(f"Loading faster-whisper model on {self.device} ({self.compute_type})...")
+        print(f"Loading faster-whisper model (device=auto, compute_type=default)...")
         # Model di-load per-request kalau user minta size berbeda dari default,
         # tapi kita preload "base" di setup() supaya cold start request pertama
         # (dengan size default) tetap cepat.
