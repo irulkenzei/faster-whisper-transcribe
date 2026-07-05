@@ -1,9 +1,38 @@
 import os
+import json
+import subprocess
 import tempfile
 
 from pydub import AudioSegment
 from cog import BasePredictor, BaseModel, Input, Path
 from faster_whisper import WhisperModel
+
+
+def detect_audio_format(path: str):
+    """
+    Deteksi format audio dari ISI file pakai ffprobe, bukan dari ekstensi nama
+    file. Ini penting karena file yang didownload dari URL semacam Appwrite
+    Storage (".../view?project=...") tidak punya ekstensi di path-nya sama
+    sekali -- dan ternyata pydub (kalau format= tidak diisi) fallback ke
+    tebak-tebakan berbasis ekstensi nama file, BUKAN auto-detect dari isi
+    file, sehingga selalu salah tebak untuk URL semacam ini.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=format_name",
+                "-of", "json", path,
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        data = json.loads(result.stdout or "{}")
+        format_name = data.get("format", {}).get("format_name", "")
+        # format_name bisa berupa beberapa alias dipisah koma
+        # (mis. "mov,mp4,m4a,3gp,3g2,mj2"), ffmpeg terima nama pertama.
+        return format_name.split(",")[0] if format_name else None
+    except Exception:
+        return None
 
 
 class Output(BaseModel):
@@ -63,14 +92,14 @@ class Predictor(BasePredictor):
 
         # Konversi ke WAV 16kHz mono (standar input Whisper), sama seperti
         # endpoint /transcribe di simple_server.py.
-        # PENTING: jangan tentukan `format=` berdasarkan ekstensi nama file --
-        # URL dari Appwrite Storage (mis. ".../view?project=...") tidak punya
-        # ekstensi di path-nya, jadi deteksi berbasis nama file akan salah
-        # (fallback ke "wav" lalu ffmpeg gagal decode file m4a/caf sebagai wav).
-        # Tanpa `format=`, ffmpeg/pydub auto-detect dari isi file (magic bytes),
-        # yang jauh lebih reliable untuk URL tanpa ekstensi.
+        # Deteksi format dari isi file via ffprobe dulu (lihat detect_audio_format) --
+        # jangan andalkan ekstensi nama file, URL dari Appwrite Storage tidak punya itu.
         src_path = str(audio)
-        audio_seg = AudioSegment.from_file(src_path)
+        detected_format = detect_audio_format(src_path)
+        if detected_format:
+            audio_seg = AudioSegment.from_file(src_path, format=detected_format)
+        else:
+            audio_seg = AudioSegment.from_file(src_path)
         audio_seg = audio_seg.set_channels(1).set_frame_rate(16000)
 
         temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
