@@ -112,11 +112,27 @@ class Predictor(BasePredictor):
 
     def _load_model_with_retry(self, model_size: str, max_attempts: int = 3) -> WhisperModel:
         """
-        Load WhisperModel dengan retry + backoff. Menangani gangguan jaringan
-        sesaat ke Hugging Face Hub (mis. 'peer closed connection') yang
-        sebelumnya bikin container gagal total di setup() tanpa kesempatan
-        coba lagi.
+        Load WhisperModel dengan strategi:
+        1. Coba `local_files_only=True` dulu -- ini SAMA SEKALI tidak menyentuh
+           network kalau weights sudah ter-cache (dari pre-download saat build
+           di cog.yaml). huggingface_hub secara default TETAP memanggil server
+           untuk cek metadata/etag walau file sudah ada di cache lokal, kecuali
+           dipaksa offline seperti ini -- itu penyebab kenapa masih gagal
+           dengan 'peer closed connection' walau sudah di-pre-download.
+        2. Kalau local_files_only gagal (mis. model_size ini belum pernah
+           di-download sebelumnya), baru fallback ke mode online dengan
+           retry + backoff untuk menangani gangguan jaringan sesaat.
         """
+        try:
+            return WhisperModel(
+                model_size,
+                device=self.device,
+                compute_type=self.compute_type,
+                local_files_only=True,
+            )
+        except Exception as e:
+            print(f"   - '{model_size}' belum ter-cache lokal ({e}), mencoba download online...")
+
         last_error = None
         for attempt in range(1, max_attempts + 1):
             try:
