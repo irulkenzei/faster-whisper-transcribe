@@ -1,1 +1,11 @@
+build:
+  gpu: true
+  python_version: "3.10"
+  system_packages:
+    - "ffmpeg"
+  python_packages:
+    - "faster-whisper==1.0.3"
+    - "pydub==0.25.1"
+    - "numpy==1.22.0"
 
+predict: "predict.py:Predictor"
