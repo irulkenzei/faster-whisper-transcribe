@@ -11,11 +11,11 @@ from faster_whisper import WhisperModel
 def detect_audio_format(path: str):
     """
     Deteksi format audio dari ISI file pakai ffprobe, bukan dari ekstensi nama
-    file. Ini penting karena file yang didownload dari URL semacam Appwrite
-    Storage (".../view?project=...") tidak punya ekstensi di path-nya sama
-    sekali -- dan ternyata pydub (kalau format= tidak diisi) fallback ke
-    tebak-tebakan berbasis ekstensi nama file, BUKAN auto-detect dari isi
-    file, sehingga selalu salah tebak untuk URL semacam ini.
+    file. Penting untuk speaker_wav / audio yang berupa URL Appwrite Storage
+    (".../view?project=...") yang tidak punya ekstensi di path-nya sama
+    sekali -- pydub (kalau format= kosong) fallback ke tebak-tebakan berbasis
+    ekstensi nama file, bukan auto-detect dari isi file, jadi selalu salah
+    tebak untuk URL semacam ini.
     """
     try:
         result = subprocess.run(
@@ -28,11 +28,57 @@ def detect_audio_format(path: str):
         )
         data = json.loads(result.stdout or "{}")
         format_name = data.get("format", {}).get("format_name", "")
-        # format_name bisa berupa beberapa alias dipisah koma
-        # (mis. "mov,mp4,m4a,3gp,3g2,mj2"), ffmpeg terima nama pertama.
         return format_name.split(",")[0] if format_name else None
     except Exception:
         return None
+
+
+# Kandidat format yang dipaksa dicoba satu-satu kalau ffprobe gagal
+# mendeteksi (mis. karena build ffprobe berbeda atau file agak tidak lazim).
+# Urutan disusun berdasar kemungkinan terbesar untuk rekaman dari React
+# Native / expo-file-system (m4a/mp4 paling umum di iOS & Android modern).
+_FALLBACK_FORMAT_CANDIDATES = ["mp4", "m4a", "3gp", "wav", "mp3", "ogg", "webm", "aac"]
+
+
+def load_audio_robust(path: str) -> AudioSegment:
+    """
+    Load audio dengan strategi berlapis:
+    1. Coba format hasil deteksi ffprobe (paling akurat, berbasis isi file).
+    2. Kalau gagal/tidak terdeteksi, paksa coba beberapa format umum satu-satu.
+    3. Terakhir, coba tanpa format sama sekali (biarkan ffmpeg full-auto).
+    """
+    tried = []
+    detected = detect_audio_format(path)
+    print(f"   - ffprobe mendeteksi format: {detected!r}")
+
+    candidates = []
+    if detected:
+        candidates.append(detected)
+    for fmt in _FALLBACK_FORMAT_CANDIDATES:
+        if fmt not in candidates:
+            candidates.append(fmt)
+
+    last_error = None
+    for fmt in candidates:
+        try:
+            audio = AudioSegment.from_file(path, format=fmt)
+            print(f"   - Berhasil decode dengan format: {fmt}")
+            return audio
+        except Exception as e:
+            tried.append(fmt)
+            last_error = e
+            continue
+
+    # Last resort: biarkan ffmpeg full-auto tanpa hint format sama sekali
+    try:
+        return AudioSegment.from_file(path)
+    except Exception as e:
+        last_error = e
+
+    raise RuntimeError(
+        f"Tidak bisa decode file audio dengan format apapun (sudah dicoba: {tried}). "
+        f"Error terakhir: {last_error}"
+    )
 
 
 class Output(BaseModel):
@@ -92,14 +138,10 @@ class Predictor(BasePredictor):
 
         # Konversi ke WAV 16kHz mono (standar input Whisper), sama seperti
         # endpoint /transcribe di simple_server.py.
-        # Deteksi format dari isi file via ffprobe dulu (lihat detect_audio_format) --
-        # jangan andalkan ekstensi nama file, URL dari Appwrite Storage tidak punya itu.
+        # Pakai load_audio_robust: coba deteksi ffprobe dulu, lalu fallback
+        # paksa coba beberapa format umum kalau deteksi otomatis gagal.
         src_path = str(audio)
-        detected_format = detect_audio_format(src_path)
-        if detected_format:
-            audio_seg = AudioSegment.from_file(src_path, format=detected_format)
-        else:
-            audio_seg = AudioSegment.from_file(src_path)
+        audio_seg = load_audio_robust(src_path)
         audio_seg = audio_seg.set_channels(1).set_frame_rate(16000)
 
         temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
